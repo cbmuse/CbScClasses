@@ -1,0 +1,100 @@
+{\rtf1\mac\ansicpg10000\cocoartf824\cocoasubrtf330
+{\fonttbl\f0\fnil\fcharset77 Monaco;}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;\red0\green0\blue191;\red0\green0\blue191;
+\red0\green115\blue0;}
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\ql\qnatural
+
+\f0\fs24 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\ql\qnatural
+\cf3 \ul \ulc0 Console\cf2  synth interface:\ulnone \
+\
+\cf3 Executing \cf4 Console\cf0 .new with no arguments brings up a dialog box allowing the setting of\cf2  are arbitrary numbers of \cf3 Signals\cf2  (left sliders), each with numVoices  and \cf3 Effects\cf2  (right sliders). The number of parameters per Signal and Effect can also be set, although they should not exceed 16 or the graphics will be confused.  The number and standard length of record buffers can also be set, as well as the number of 2048 point FFT Buffers which can be used.\
+\
+Once the interface appears, signal synths can be loaded from the lower menu below 'SIGNALS' which will be set in the positions selected by the larger, upper menu.  The lower menu should show all stored SynthDefs on the machine that DO NOT include an argument named 'effIn'.  Those that do include this argument appear in the lower 'EFFECTS' menu, and can be similarly assigned to its active synth menu.  Once these are both assigned, replace them in the current PRESET by clicking the button in the middle, then 'SAVE' the whole preset to a file.  Later, presets can be reloaded from this menu, or by using Console.new whose arguments are as below:\
+\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\ql\qnatural
+
+\fs18 \cf0 *new \{ \cf4 arg\cf0  presetFile, presetRoutineFile, sampleFile,  midiInFuncs, server; 
+\fs24 \cf2 \
+\
+\
+1) \cf3 Connections\cf2  between signals and effects are created by \cf3 this\cf2  line in a \cf3 SynthDef\cf2  (where \cf5 'outSignal'\cf2  is the same signal being sent to the main audio \cf3 Out\cf2 , and \cf5 'effOut'\cf2  and \cf5 'effAmp'\cf2  are arguments):\
+\
+		\cf3 Out\cf2 .ar(effOut, outSignal*effAmp);\
+ \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\ql\qnatural
+\cf3 The\cf2  argument \cf5 \\effOut\cf2  is set automatically by the \cf3 GUI\cf2  \cf5 'send'\cf2  box.\
+\
+2) \cf3 An\cf2  effects \cf3 SynthDef\cf2  must include the argument \cf5 \\effIn\cf2 , which assigns the synths\cf5 ' audio input bus from the setting of the GUI '\cf2 inBus\cf5 ' box.  Use this line to bring the effect send into the synth:\
+\
+		In.ar(effIn);\
+\
+3) Every signal and effect synth must also contain an envelope with a sustain segment, a \\gate argument, and a '\cf2 doneAction: 2\cf5 ' -- this allows the synth to start and stop automatically as '\cf2 notes\cf5 ', or as '\cf2 effects\cf5 ' when presets are changed.\
+\
+4) These argument names are reserved which are used for standardized functions:  \\gate, \\effOut, \\effIn,  \\vol, \\bufnum, \\recBuf, and \\fftBuf.  You can use any other names for arguments, but these must occur before \\gate in the argument list order.  Use the reserved argument names only after \\gate.\
+\
+5) SynthDefs '\cf3 RecordBuf\cf5 ' and '\cf3 BufWr\cf5 ' can only work in an effect (not signal) and can only write to one record or one fft buffer, specified by the arguments \\recBuf and \\fftBuf.\
+\
+6) SynthDefs '\cf3 PlayBuf\cf5 ' and '\cf3 BufRd\cf5 ' can play only one sample or record buffer or fft buffer, specified by the argument \\sampBuf or \\recBuf, and may not use both types in the same SynthDef.  The arg \\bufNum must also be used to identify the Buffer played, and must come after \\gate in the argument list order.\
+\
+7) The \\vol argument receives data from the '\cf2 masterVol' slider, for use as master volume control;\
+\
+Here are one signal and one effect SynthDef that implement this interface:\
+\
+SynthDef("sawOsc",\{ arg freq,effAmp,pan,amp,gate,effOut,vol;\
+	var sig, env;\
+	sig = LFSaw.ar(freq,0);\
+	env = EnvGen.kr(Env.asr(0.1,1,0.2),gate:gate,doneAction:2);\
+	Out.ar(effOut,sig*effAmp*env);\
+	Out.ar(0,Pan2.ar(sig,pan,amp*env*vol));\
+\}).store;\
+		\
+SynthDef("wah", \{ arg freq,lofreq,depth,microDecay,pan,amp,gate,effIn,vol;\
+	var in, eff, maxFreq=8000; \
+	Out.ar(0,\
+		Pan2.ar(\
+			Ringz.ar(In.ar(effIn), \
+				SinOsc.kr(lofreq,		// lfoFreq\
+					0,depth*maxFreq,	// lfoDepth\
+					freq),		// centerFreq\
+				microDecay,amp\
+			),\
+			pan,vol\
+		);\
+	)\
+\}).store;\
+\
+\ul Console Computer Keyboard Controls\ulnone \
+\
+Keys "q-w-e-r-t-y-u-i" trigger voices 1 thru 8.\
+Keys "a-s-d-f-t-g-h-j" select successive signal instruments\
+Keys "z-x-c-v-b-n-n-m" select successive effect instruments\
+\
+\ul Console MIDI Controls\ulnone \
+\
+create your own functions that respond to MIDI messages, with the following argument list, such as: \
+	\
+~ctlFunc = \{ arg console, func;\
+ 	MIDIIn.control = \{ arg src, chan, num, val;\
+	//	[chan,num,val].postln;\
+	if( chan == 0,\{		// channel 1 control \
+		if( num == 17,\{ \{ console.window.volSliderView.valueAction_(val/127) \}.defer \})\
+	\});\
+	if( chan == 14,\{	// channel 15, ctl 1-16 control signal parameters\
+		if( num < 17,\{ \
+			\{ console.window.sigCtlSliders.at((num-1)).valueAction_(val/127); \}.defer \
+		\},\{ \
+			if( num == 17,\{ \
+				\{ console.window.volSliderView.valueAction_(val/127) \}.defer\
+		\})\}); \
+	\},\{\
+		if( chan == 15,\{	// channel 16, ctl 1-16 control effect parameters\
+			if( num < 17,\{\
+				\{ console.window.effCtlSliders.at((num-1)).valueAction_(val/127); \}.defer\
+			\},\{ if( num == 17,\{ \{ console.window.volSliderView.valueAction_(val/127) \}.defer\
+			\})\}); \
+	\})\});\
+\};\
+\
+\
+}

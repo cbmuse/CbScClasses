@@ -1,31 +1,61 @@
-NoKnowNetHub {
-	var myName,<size=20,<>analyzer,<view,<guiCtls,<pguis,netPlayerSel;
-	var <network,local,netDisp,<responders,<sendNetIndex,<netUpdateRoutine,<paramData,<synth;
+NoKnowNetHubRemote {
+	var <myName,<size=20,<>analyzer,<view,<guiCtls,<pguis,netPlayerSel;
+	var <network,local,<oscGroupClient,<networkSize,netDisp,<responders,<sendNetIndex,<netUpdateRoutine,
+	<paramData,<synth;
 	var <inOnOff,<inFrq,<frqProb,<frqScale,<frqOffset,<outFrq,<netFrq,<frqBlend,<frqCtlDest;
 	var <inTimbr,<timbrProb,<timbrScale,<timbrOffset,<outTimbr,<netTimbr,<timbrBlend,<timbrCtlDest;
 	var <inAmp,<ampProb,<ampScale,<ampOffset,<outAmp,<netAmp,<ampBlend,<ampCtlDest;
 	var <netPlayer,netData,<synthOnOff,<>synthDefs,<curSynth,<synthModCtls,<curCtls,
 	mod1Ctl,mod2Ctl,mod3Ctl,<synCtl1,<synCtl2,<synCtl3;
 
-	*new {|name=\noKnow,size=20|
-		^super.new.init(name,size)
+	*new {|name=\noKnow,size=20,remote|
+		^super.new.init(name,size,remote)
 	}
 
-	init {|argName,argSize|
+	init {|argName,argSize,argRemote|
 		myName=argName.asSymbol;
 		size=argSize;
+		oscGroupClient=argRemote;
 		network=NetHub();
 		local =  NetAddr("127.0.0.1", 57110); // local server
+		this.setupRemoteNetwork;  // setup responders to receive data from remote clients
+		if(oscGroupClient.notNil,{  // if this is an OSC remote server
+			oscGroupClient.join;
+			oscGroupClient.netAddr.sendMsg('/remHostip', NetAddr.myIP, NetAddr.langPort,myName);
+		});
 		analyzer=FBanalyzer.new(1,this);
 		{ while({ synthDefs.isNil },{ 0.1.wait }); // wait for boot and synthdefs load
-			{ this.makeGui;
+			{ this.makeGui; view.onClose_({ this.stop });  }.defer;
+			this.initResponders;
 			paramData= (freq:0,timbre:0,amp:0);
 			this.setParamResponses;
-				this.setSendNetIndex;
-			this.initResponders;
-			view.onClose_({ this.stop }) }.defer
+			this.setSendNetIndex;
 		}.fork
 	}
+
+	setupRemoteNetwork {
+        // merge OSCgroups clients with local network clients
+        OSCdef(\remClientIPResponder, {| msg,time,addr,recvPort|
+            var clientName = msg[3];
+            msg.postln;
+            network.clients = network.clients.add(clientName.asSymbol -> NetAddr(msg[1].asString, msg[2].asInteger));
+            ("NetHub: Received IP from " ++ clientName ++ " ").post;
+            network.clients[clientName].postln;
+        },'/remClientip');
+
+        OSCdef(\remHostIPResponder, {| msg,time,addr,recvPort|
+            var receivedIP = msg[1].asString,
+                receivedPort = msg[2].asInteger,
+                receivedName = msg[3].asString;
+            msg.postln;
+            network.clients = network.clients.add(receivedName.asSymbol -> NetAddr(receivedIP, receivedPort));
+
+            // broadcast my ip back to the client
+            NetAddr(receivedIP, receivedPort).sendMsg('/remClientip', NetAddr.myIP, NetAddr.langPort, myName);
+
+            ("NetHub: IP received from " ++ receivedName ++ " = " ++ receivedIP ++":" ++ receivedPort).postln;
+        },'/remHostip');
+    }
 
 	setSendNetIndex {
 		netUpdateRoutine =
@@ -33,6 +63,7 @@ NoKnowNetHub {
 			inf.do({
 			var a = network.clients.values.collect {|n| n.ip }.asSet; // save only unique IPs
 			sendNetIndex = a.asArray.sort.detectIndex {|n| n == NetAddr.myIP }; // index low to high
+			networkSize=a.size;
 			1.wait; })
 		}).play
 	}
@@ -40,7 +71,12 @@ NoKnowNetHub {
 	sendParamToAll {|param,val|
 		if(((paramData[param.asSymbol]-val).abs > 0.01),{  // don't send repeating values
 			paramData.put(param.asSymbol,val);
-			network.toAll(["/param",sendNetIndex,param,val])})
+			network.toAll(["/param",sendNetIndex,param,val]);
+			if(oscGroupClient.notNil,{
+				oscGroupClient.sendMsg('/remote/param',
+					(myName.asString++"_"++(sendNetIndex.asString)).asSymbol,param,val)
+			})
+		})
 	}
 
 	setParamResponses {
@@ -62,6 +98,19 @@ NoKnowNetHub {
 					if(fromMe.not,{if(netPlayer.value == pl,{ netAmp.value_(f) })});
 			})
 		},'/param');
+		OSCdef(\remoteParamResp,{|msg|
+			var player=networkSize+(msg[1].asString.split($_)[1].asInt);
+			var f = msg[3];
+			msg.postln;
+			switch(msg[2],
+				\freq,{ this.displayNetData(player,\freq,f);
+					if(netPlayer.value == player,{ netFrq.value_(f)})},
+				\timbre,{ this.displayNetData(player,\timbre,f);
+					if(netPlayer.value == player,{ netTimbr.value_(f)})},
+				\amp,{this.displayNetData(player,\amp,f);
+					if(netPlayer.value == player,{ netAmp.value_(f)})},
+			)
+		},'/remote/param')
 	}
 
 	displayNetData {|idx=0,param=\freq,value=0.5|
@@ -219,9 +268,7 @@ NoKnowNetHub {
 		synCtl3.connect(pguis[4]);
 
 		synthOnOff.action_({|cv| var name= pguis[1].items[pguis[1].value];
-			if(cv.value==1,{
-				synth=Synth.before(analyzer.fbGroup,name)
-		},{ synth.release; synth=nil })});
+			if(cv.value==1,{ synth=Synth(name) },{ synth.release; synth=nil })});
 		curSynth.action = {|m|
 			curCtls = synthModCtls[curSynth.items[curSynth.value]];
 					mod1Ctl.string_("1-"++(curCtls[0].asString));
@@ -232,12 +279,16 @@ NoKnowNetHub {
 			}.defer });
 		};
 		curSynth.value_(0);  // initialize curCtls
-		synCtl1.action_({|cv| if(synth.notNil,{
-			synth.set(curCtls[0],curCtls[0].asSpec.map(cv.value)) })});
-		synCtl2.action_({|cv| if(synth.notNil,{
-			synth.set(curCtls[1],curCtls[1].asSpec.map(cv.value)) })});
-		synCtl3.action_({|cv| if(synth.notNil,{
-			synth.set(curCtls[2],curCtls[2].asSpec.map(cv.value)) })});
+
+		synCtl1.action_({|cv|
+			var spec = curCtls[0].asSpec; if(spec.isNil,{ spec = [0,1,\lin].asSpec });
+			if(synth.notNil,{ synth.set(curCtls[0],spec.map(cv.value)) })});
+		synCtl2.action_({|cv|
+			var spec = curCtls[1].asSpec; if(spec.isNil,{ spec = [0,1,\lin].asSpec });
+			if(synth.notNil,{ synth.set(curCtls[1],spec.map(cv.value)) })});
+		synCtl3.action_({|cv|
+			var spec = curCtls[1].asSpec; if(spec.isNil,{ spec = [0,1,\lin].asSpec });
+			if(synth.notNil,{ synth.set(curCtls[2],spec.map(cv.value)) })});
 
 		view.parent.onClose_({this.stopAll })
 	}
@@ -281,15 +332,15 @@ NoKnowNetHub {
 	}
 
 	loadSynthDefs {
-		synthDefs = [SynthDef(\fmFB,{|freq=1000,mfrq=1,idx=2,amp=0.1,gate=1,vol=0.2|
+		synthDefs = [SynthDef(\fmFB,{|freq=1000,mfrq=0.1,idx=2,amp=0.1,gate=1,vol=0.2|
 			var sig,env;
 			env = EnvGen.kr(Env.asr(attackTime: 0.001, releaseTime: 0.025),
-					gate, doneAction: 2);
+				gate, doneAction: 2);
 			sig = SinOsc.ar(
 				SinOsc.ar(
 					mfrq,0,
 					idx*mfrq,
-					freq),0,Ò
+					freq),0,
 				amp*env);
 			Out.ar(analyzer.fbBus,sig);
 			Out.ar([0,1],sig*vol)
@@ -328,12 +379,98 @@ NoKnowNetHub {
 				sig = RLPF.ar(
 					LFPulse.ar(
 						SinOsc.kr(lfrq,0,fmul,freq*0.005) // freq
-					,[0,0.1],wdth), 	// iphase, width
+						,[0,0.1],wdth), 	// iphase, width
 					ffrq,0.1).clip2(clip);  // filt freq, phase, clip
 				sig=Mix(sig)*amp*env;
 				Out.ar(analyzer.fbBus,sig);
 				Out.ar([0,1],sig*vol)
+			}),
+			SynthDef(\steam, {arg prm1=0.5, prm2=0.5, amp=0.2, gate=1, vol=0.2;
+				var sig, env;
+				env = EnvGen.kr(Env.asr(attackTime: 0.001, releaseTime: 0.025),
+					gate, doneAction: 2);
+				sig = [
+					SinOsc.ar(
+						StandardN.ar(
+							7+(prm1*193),
+							0.1+(prm2*8.1)
+						)*1500+800
+					).softclip,
+					SinOsc.ar(
+						StandardN.ar(
+							6+(prm1*195),
+							0.095+(prm2*8)
+						)*1500+800
+					).softclip
+				]*LFNoise0.ar(118/60, 0.3, 0.3)*env*amp;
+				Out.ar(analyzer.fbBus,sig);
+				Out.ar([0, 1], sig*vol);
+			}),
+
+			SynthDef(\gsLqdSld, {arg prm1=0.5, prm2=0.5, amp=0.2,  gate=1, vol=0.2;
+				var sig, env;
+				var clockRate, clockTime, clock, centerFreq, freq;
+
+				env = EnvGen.kr(Env.asr(attackTime: 0.001, releaseTime: 0.025),
+					gate, doneAction: 2);
+				clockRate = 8 + (12.3288*prm1).squared;
+				clockTime = clockRate.reciprocal;
+				clock = {Dust.kr(clockRate*4, 0.1)}.dup;
+				centerFreq = 100 + (88.882*prm2).squared;
+				freq = Latch.kr(
+					WhiteNoise.kr(
+						centerFreq,
+						centerFreq
+					),
+					clock
+				);
+				sig = SinOsc.ar(
+					freq,
+					0,
+					Decay2.kr(
+						clock,
+						0.125*clockTime,
+						1.6*clockTime
+					)
+				)*amp*env;
+				Out.ar(analyzer.fbBus,sig);
+				Out.ar([0, 1], sig*vol);
+			}),
+
+			SynthDef(\prickles, {arg prm1=0.5, prm2=0.5, amp=0.2,  gate=1, vol=0.2;
+				var trig, sig, env;
+				env = EnvGen.kr(Env.asr(attackTime: 0.001, releaseTime: 0.025),
+					gate, doneAction: 2);
+				trig = Impulse.ar(
+					24,
+					0,
+					SinOsc.kr([0.5, 0.4], SinOsc.kr(3, 0, pi, pi), 1, 1)
+				);
+				sig = {Mix.fill(
+					3,
+					{Ringz.ar(
+						CoinGate.ar(0.05 + (0.9*prm1), trig*0.5),
+						#[1, 1.5]*Rand(1000, 9000),
+						0.001 + (0.31464*prm2).squared
+						)
+					}
+				)}.dup;
+				sig = sig*env*amp;
+				Out.ar(analyzer.fbBus,sig);
+				Out.ar([0, 1], sig*vol);
+			}),
+
+			SynthDef(\noStation, {arg prm1=0.5, prm2=0.5, amp=0.2,  gate=1, vol=0.2;
+				var sig, env;
+				env = EnvGen.kr(Env.asr(attackTime: 0.001, releaseTime: 0.025),
+					gate, doneAction: 2);
+				sig = [    StandardN.ar(25 + 5488*prm1, 0.85 + 3.15*prm2),
+					StandardN.ar(24 + 5489*prm1, 0.9 + 3.2*prm2)
+				]*amp*env;
+				Out.ar(analyzer.fbBus,sig);
+				Out.ar([0, 1], sig*vol);
 			})
+
 		].collect {|def| def.send(analyzer.s) };
 		curSynth=SV.new.sp((0..synthDefs.size),0)
 		.items_(synthDefs.collect {|def| def.name.asSymbol });
@@ -342,7 +479,11 @@ NoKnowNetHub {
 			fmFB: [\idx,\mfrq,\amp],
 			fmDrumFB: [\rtio,\trgf,\amp],
 			pluckFB: [\plSpd,\mfrq,\amp],
-			motoRevFB: [\lfrq,\ffrq,\amp]
+			motoRevFB: [\lfrq,\ffrq,\amp],
+			steam: [\prm1,\prm2,\amp],
+			gsLqdSld: [\prm1,\prm2,\amp],
+			prickles: [\prm1,\prm2,\amp],
+			noStation: [\prm1,\prm2,\amp]
 		);
 		// provide specs for all fb mod keys
 		Spec.specs.addAll([
@@ -377,14 +518,29 @@ Synth(s) have 3 input control rate buses that are connected to the published 3 f
 While playing, choose  different netPlayers to patch their analysis data to your input controls. Manipulate the probability control to change how often the feedback is applied to the synth; manipulate scale control to change its range, and offset to tune that range of change to different values.  Tune the blend knob to mix your feedback with that of your chosen netPlayer.  The result of this feedback data matrix mix process is shown in the numberBox, and in the three sliders in the Synth gui section.  The
 last two sliders are entirely manually controlled, allowing you control the frequency range of the synth independent of the feedback, and to control the volume of your local sound output.
 
-x=NoKnowNet(\chris,20)
-x.sendToAll('/freq',30)
-x.makeGui
-18*20
-\lofreq.asSpec
-\mfrq.asSpec
-ControlSpec.spec
+INSTRUCTIONS FOR INSTALLING AND STARTING THE NEW NoKnowNetHubRemote CLASS :
 
+1. Put a copy of the OscGroupClient binary executable into your /Applications/SuperCollider directory.
 
+2. Put OscGroup.sc in your /Users/Username/Library/Application Support/SuperCollider/quarks/OscGroupClient
+folder, or if you don't have this installed as a Quark, put it directly here:
+
+Users/Username/Library/Application Support/SuperCollider/Extensions/classes
+
+3. Add NoKnowNetHubRemote.sc to the same directory:
+Users/Username/Library/Application Support/SuperCollider/Extensions/classes
+
+4. Start SuperCollider and execute these two lines:
+
+a=OscGroupClient("pauline.mills.edu","chris","chrispwd","hub","hubpwd");
+b=NoKnowNetHubRemote(remote: a);
+
+b.curCtls
+b.network.clients.values.collect
+b.oscGroupClient.sendMsg('/remHostip', NetAddr.myIP, NetAddr.langPort,b.myName)
+b.sendNetIndex
+b.netPlayer.value
+b.sendParamToAll(\freq,0.5.rand)
+b.network.toAll(["/param",b.sendNetIndex,"freq",0.5.rand])
 */
 	
